@@ -12,7 +12,6 @@ import com.wallet.transfer.dto.TransferResponse;
 import com.wallet.transfer.exception.IdempotencyConflictException;
 import com.wallet.transfer.exception.InsufficientFundsException;
 import com.wallet.transfer.exception.WalletNotFoundException;
-import com.wallet.transfer.repository.IdempotencyRecordRepository;
 import com.wallet.transfer.repository.LedgerEntryRepository;
 import com.wallet.transfer.repository.TransferRepository;
 import com.wallet.transfer.repository.WalletRepository;
@@ -28,18 +27,18 @@ public class TransferService {
     private final WalletRepository walletRepository;
     private final TransferRepository transferRepository;
     private final LedgerEntryRepository ledgerEntryRepository;
-    private final IdempotencyRecordRepository idempotencyRecordRepository;
+    private final IdempotencyService idempotencyService;
     private final ObjectMapper objectMapper;
 
     public TransferService(WalletRepository walletRepository,
                            TransferRepository transferRepository,
                            LedgerEntryRepository ledgerEntryRepository,
-                           IdempotencyRecordRepository idempotencyRecordRepository,
+                           IdempotencyService idempotencyService,
                            ObjectMapper objectMapper) {
         this.walletRepository = walletRepository;
         this.transferRepository = transferRepository;
         this.ledgerEntryRepository = ledgerEntryRepository;
-        this.idempotencyRecordRepository = idempotencyRecordRepository;
+        this.idempotencyService = idempotencyService;
         this.objectMapper = objectMapper;
     }
 
@@ -49,64 +48,22 @@ public class TransferService {
         boolean hasIdempotencyKey = key != null && !key.trim().isEmpty();
 
         if (hasIdempotencyKey) {
-            Optional<IdempotencyRecord> existing = idempotencyRecordRepository.findById(key);
+            String hash = calculateRequestHash(request);
+            Optional<IdempotencyRecord> existing = idempotencyService.claimKey(key, hash);
             if (existing.isPresent()) {
                 IdempotencyRecord record = existing.get();
-                String hash = calculateRequestHash(request);
                 if (!record.getRequestHash().equals(hash)) {
                     throw new IdempotencyConflictException("Idempotency key has been used with different request parameters");
                 }
-                if (record.getResponseStatus() != null) {
-                    if (record.getResponseStatus() == 200) {
-                        try {
-                            return objectMapper.readValue(record.getResponseBody(), TransferResponse.class);
-                        } catch (Exception e) {
-                            throw new RuntimeException("Failed to deserialize idempotent response", e);
-                        }
-                    } else {
-                        throw new InsufficientFundsException(record.getResponseBody());
-                    }
-                } else {
-                    throw new IdempotencyConflictException("Request with this idempotency key is already in progress");
-                }
-            }
-
-            String hash = calculateRequestHash(request);
-            IdempotencyRecord record = new IdempotencyRecord(
-                    key,
-                    hash,
-                    null,
-                    null,
-                    LocalDateTime.now()
-            );
-            try {
-                idempotencyRecordRepository.saveAndFlush(record);
-            } catch (org.springframework.dao.DataIntegrityViolationException ex) {
-                IdempotencyRecord concurrentRecord = idempotencyRecordRepository.findById(key)
-                        .orElseThrow(() -> new IdempotencyConflictException("Request is being processed by another thread"));
-                if (concurrentRecord.getResponseStatus() != null) {
-                    if (concurrentRecord.getResponseStatus() == 200) {
-                        try {
-                            return objectMapper.readValue(concurrentRecord.getResponseBody(), TransferResponse.class);
-                        } catch (Exception e) {
-                            throw new RuntimeException("Failed to deserialize idempotent response", e);
-                        }
-                    } else {
-                        throw new InsufficientFundsException(concurrentRecord.getResponseBody());
-                    }
-                } else {
-                    throw new IdempotencyConflictException("Request with this idempotency key is already in progress");
-                }
+                return replayFromTransfer(key);
             }
         }
-
 
         String fromId = request.fromWalletId();
         String toId = request.toWalletId();
         if (fromId.equals(toId)) {
             throw new IllegalArgumentException("Cannot transfer to the same wallet");
         }
-
 
         Wallet firstWallet;
         Wallet secondWallet;
@@ -140,12 +97,7 @@ public class TransferService {
         if (fromWallet.getBalance() < request.amount()) {
             transfer.setState(TransferState.FAILED);
             transferRepository.save(transfer);
-
-            String errMsg = "Insufficient funds in wallet: " + fromId;
-            if (hasIdempotencyKey) {
-                saveIdempotencyResponse(key, 400, errMsg);
-            }
-            throw new InsufficientFundsException(errMsg);
+            throw new InsufficientFundsException("Insufficient funds in wallet: " + fromId);
         }
 
         fromWallet.setBalance(fromWallet.getBalance() - request.amount());
@@ -175,7 +127,7 @@ public class TransferService {
         transfer.setState(TransferState.PROCESSED);
         transferRepository.save(transfer);
 
-        TransferResponse response = new TransferResponse(
+        return new TransferResponse(
                 transferId,
                 fromId,
                 toId,
@@ -183,28 +135,30 @@ public class TransferService {
                 TransferState.PROCESSED,
                 transfer.getCreatedAt()
         );
+    }
 
-        if (hasIdempotencyKey) {
-            try {
-                String jsonResponse = objectMapper.writeValueAsString(response);
-                saveIdempotencyResponse(key, 200, jsonResponse);
-            } catch (Exception e) {
-                throw new RuntimeException("Failed to serialize transfer response for idempotency", e);
-            }
+    private TransferResponse replayFromTransfer(String idempotencyKey) {
+        Optional<Transfer> found = transferRepository.findByIdempotencyKey(idempotencyKey);
+        if (found.isEmpty() || found.get().getState() == TransferState.PENDING) {
+            throw new IdempotencyConflictException("Request with this idempotency key is already in progress");
         }
-
-        return response;
+        Transfer t = found.get();
+        if (t.getState() == TransferState.FAILED) {
+            throw new InsufficientFundsException("Insufficient funds in wallet: " + t.getFromWalletId());
+        }
+        return new TransferResponse(t.getId(), t.getFromWalletId(), t.getToWalletId(), t.getAmount(), t.getState(), t.getCreatedAt());
     }
 
     private String calculateRequestHash(CreateTransferRequest request) {
-        return request.fromWalletId() + "|" + request.toWalletId() + "|" + request.amount();
-    }
-
-    private void saveIdempotencyResponse(String key, int status, String body) {
-        IdempotencyRecord record = idempotencyRecordRepository.findById(key)
-                .orElseThrow(() -> new IllegalStateException("Idempotency record not found during update"));
-        record.setResponseStatus(status);
-        record.setResponseBody(body);
-        idempotencyRecordRepository.save(record);
+        try {
+            // Hash a stable JSON serialization to avoid delimiter ambiguities.
+            byte[] payload = objectMapper.writeValueAsBytes(
+                    new CreateTransferRequest(null, request.fromWalletId(), request.toWalletId(), request.amount())
+            );
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(payload);
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to compute idempotency request hash", e);
+        }
     }
 }

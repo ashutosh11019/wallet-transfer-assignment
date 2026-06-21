@@ -37,13 +37,13 @@ public class LedgerController {
 
     @GetMapping("/balance-check")
     public ResponseEntity<Map<String, Object>> balanceCheck() {
-        Long totalDebits  = ledgerEntryRepository.sumDebits();
-        Long totalCredits = ledgerEntryRepository.sumCredits();
-        boolean balanced  = totalDebits != null && totalDebits.equals(totalCredits);
+        Long totalDebits = java.util.Objects.requireNonNullElse(ledgerEntryRepository.sumDebits(), 0L);
+        Long totalCredits = java.util.Objects.requireNonNullElse(ledgerEntryRepository.sumCredits(), 0L);
+        boolean balanced = totalDebits.equals(totalCredits);
         return ResponseEntity.ok(Map.of(
-                "totalDebits",  totalDebits  != null ? totalDebits  : 0,
-                "totalCredits", totalCredits != null ? totalCredits : 0,
-                "balanced",     balanced
+                "totalDebits", totalDebits,
+                "totalCredits", totalCredits,
+                "balanced", balanced
         ));
     }
 }

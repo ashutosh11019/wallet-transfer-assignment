@@ -17,23 +17,15 @@ public class IdempotencyRecord {
     @Column(name = "request_hash", nullable = false)
     private String requestHash;
 
-    @Column(name = "response_status")
-    private Integer responseStatus;
-
-    @Column(name = "response_body")
-    private String responseBody;
-
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
     public IdempotencyRecord() {
     }
 
-    public IdempotencyRecord(String idempotencyKey, String requestHash, Integer responseStatus, String responseBody, LocalDateTime createdAt) {
+    public IdempotencyRecord(String idempotencyKey, String requestHash, LocalDateTime createdAt) {
         this.idempotencyKey = idempotencyKey;
         this.requestHash = requestHash;
-        this.responseStatus = responseStatus;
-        this.responseBody = responseBody;
         this.createdAt = createdAt;
     }
 
@@ -51,22 +43,6 @@ public class IdempotencyRecord {
 
     public void setRequestHash(String requestHash) {
         this.requestHash = requestHash;
-    }
-
-    public Integer getResponseStatus() {
-        return responseStatus;
-    }
-
-    public void setResponseStatus(Integer responseStatus) {
-        this.responseStatus = responseStatus;
-    }
-
-    public String getResponseBody() {
-        return responseBody;
-    }
-
-    public void setResponseBody(String responseBody) {
-        this.responseBody = responseBody;
     }
 
     public LocalDateTime getCreatedAt() {

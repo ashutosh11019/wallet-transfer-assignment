@@ -29,7 +29,11 @@ public class DataSourceConfig {
         HikariConfig hikariConfig = new HikariConfig();
         hikariConfig.setDataSource(sqliteDataSource);
 
-        hikariConfig.setMaximumPoolSize(1);
+        // SQLite's WAL mode allows multiple concurrent readers and serializes writers via its
+        // own write-lock, so correctness does not depend on limiting the pool to 1 connection.
+        // A pool > 1 is also required so that REQUIRES_NEW transactions (IdempotencyService)
+        // can acquire a second connection without deadlocking the suspended outer transaction.
+        hikariConfig.setMaximumPoolSize(10);
         hikariConfig.setConnectionTestQuery("SELECT 1");
 
         return new HikariDataSource(hikariConfig);

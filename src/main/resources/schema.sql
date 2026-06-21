@@ -29,7 +29,5 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
 CREATE TABLE IF NOT EXISTS idempotency_records (
     idempotency_key VARCHAR(255) PRIMARY KEY,
     request_hash VARCHAR(255) NOT NULL,
-    response_status INTEGER,
-    response_body TEXT,
     created_at TIMESTAMP NOT NULL
 );
